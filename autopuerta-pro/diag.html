@@ -1,0 +1,65 @@
+<!-- diag.html — v2 (corregido) -->
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Diagnóstico Supabase</title>
+<style>body{font-family:monospace;font-size:13px;background:#111;color:#0f0;padding:20px}
+.err{color:#f87171}.ok{color:#4ade80}</style></head><body>
+<h3>🔍 Diagnóstico de tablas/columnas reales</h3>
+<div id="out"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+async function main(){
+  const sb = supabase.createClient(
+    'https://ziimllianelsocrdeeut.supabase.co',
+    'sb_publishable_QXku3DaQQrvenExC_vsrcg_Jfvh4sGv'
+  );
+  const out = document.getElementById('out');
+  const p = (m,c='')=>{const d=document.createElement('div');if(c)d.className=c;d.textContent=m;out.appendChild(d);};
+
+  // helper: true si la tabla existe
+  async function tablaExiste(t){
+    const {error} = await sb.from(t).select('*').limit(1);
+    return !error || !/does not exist|schema cache/.test(error.message||'');
+  }
+  // helper: true si la columna existe en la tabla
+  async function colExiste(t,c){
+    const {error} = await sb.from(t).select(c).limit(1);
+    return !error;
+  }
+
+  p('— 1) Tablas candidatas —');
+  const TABLAS = ['clientes','presupuestos','vehiculos','almacen',
+                  'tiposPuerta','tipospuerta','tipos_puerta',
+                  'partesTrabajo','partestrabajo','partes_trabajo'];
+  let tpName = null;
+  for(const t of TABLAS){
+    if(await tablaExiste(t)){
+      p(`✅ ${t}`,'ok');
+      if(['tiposPuerta','tipospuerta','tipos_puerta'].includes(t)) tpName = t;
+    } else {
+      p(`❌ ${t}`,'err');
+    }
+  }
+
+  const plan = [
+    ['clientes', ['id','nombre','contacto','email','telefono','direccion','tipo','nota',
+                  'updatedAt','updatedat','updated_at','createdat','created_at']],
+    ['vehiculos',['id','matricula','marca','modelo','anno','ano','anio','estado','km','nota',
+                  'updatedAt','updatedat','updated_at']],
+    ['almacen',  ['id','referencia','nombre','unidad','precioCompra','precocompra','precio_compra',
+                  'precioVenta','precioventa','precio_venta','stock','stockMinimo','stockminimo',
+                  'stock_minimo','proveedor','categoria','updatedAt','updatedat','updated_at']]
+  ];
+  if(tpName) plan.push([tpName,['id','nombre','descripcion','checklist','updatedAt','updatedat','updated_at']]);
+
+  for(const [tabla, cols] of plan){
+    p(`\n— Columnas en ${tabla} —`);
+    for(const c of cols){
+      const ok = await colExiste(tabla,c);
+      p(`${ok?'✅':'❌'} ${c}`, ok?'ok':'err');
+    }
+  }
+
+  p('\n🏁 Diagnóstico terminado. Pega esta salida.','ok');
+}
+main().catch(e=>p('💥 '+e.message,'err'));
+</script></body></html>

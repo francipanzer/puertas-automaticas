@@ -1,0 +1,127 @@
+<!-- migrate_to_supabase.html — v4 FINAL -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Migración AutoPuerta Pro → Supabase</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;line-height:1.5}
+  button{padding:10px 18px;font-size:15px;cursor:pointer;border-radius:6px;border:1px solid #ccc;background:#f5f5f5;margin-right:8px}
+  #log{background:#111;color:#0f0;font-family:monospace;font-size:13px;padding:14px;border-radius:8px;
+       white-space:pre-wrap;height:340px;overflow-y:auto;margin-top:16px}
+  .ok{color:#4ade80}.warn{color:#facc15}.err{color:#f87171}
+</style>
+</head>
+<body>
+<h1>🔄 Migración AutoPuertaDB v2 → Supabase</h1>
+<p>Nombres confirmados por diagnóstico: columnas en minúscula, tablas <code>tipos_puerta</code> / <code>partes_trabajo</code>.</p>
+
+<button id="btnBackup">1️⃣ Descargar backup JSON</button>
+<button id="btnMigrate">2️⃣ Migrar a Supabase</button>
+
+<div id="log"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://ziimllianelsocrdeeut.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_QXku3DaQQrvenExC_vsrcg_Jfvh4sGv';
+
+const DB_NAME = 'AutoPuertaDB';
+const DB_VERSION = 2;
+
+// store local -> { tabla destino, ren (renombrar campos), drop (campos a descartar) }
+const MAP = {
+  clientes:      { tabla:'clientes',        ren:{ updatedAt:'updatedat' }, drop:[] },
+  presupuestos:  { tabla:'presupuestos',    ren:{ updatedAt:'updatedat' }, drop:[] },
+  vehiculos:     { tabla:'vehiculos',       ren:{ updatedAt:'updatedat' }, drop:[] },
+    almacen:       { tabla:'almacen',
+                   ren:{ precioCompra:'preciocompra', precioVenta:'precioventa',
+                         stockMinimo:'stockminimo', updatedAt:'updatedat' },
+                   drop:[] },
+  tiposPuerta:   { tabla:'tipos_puerta',    ren:{ updatedAt:'updatedat' }, drop:[] },
+  partesTrabajo: { tabla:'partes_trabajo',  ren:{ updatedAt:'updatedat' }, drop:['puertaIds'] }
+};
+
+const BATCH = 500;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const logEl = document.getElementById('log');
+function log(msg, cls=''){ const d=document.createElement('div'); if(cls)d.className=cls;
+  d.textContent=msg; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight; }
+
+// Aplica renombrado + descarte de campos antes del upsert
+function transform(rows, cfg){
+  return rows.map(r=>{
+    const o = {};
+    for(const [k,v] of Object.entries(r)){
+      if(cfg.drop.includes(k)) continue;
+      o[cfg.ren[k] || k] = v;
+    }
+    return o;
+  });
+}
+
+function openDB(){ return new Promise((res,rej)=>{
+  const r = indexedDB.open(DB_NAME, DB_VERSION);
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});}
+function getAll(db, store){ return new Promise((res,rej)=>{
+  const tx = db.transaction(store,'readonly');
+  const rq = tx.objectStore(store).getAll();
+  rq.onsuccess = () => res(rq.result);
+  rq.onerror = () => rej(rq.error);
+});}
+
+document.getElementById('btnBackup').onclick = async () => {
+  try {
+    const db = await openDB();
+    const dump = {};
+    for (const s of Object.keys(MAP)){
+      try { dump[s] = await getAll(db, s); }
+      catch(e){ dump[s] = []; log(`⚠️ ${s}: ${e.message}`,'warn'); }
+    }
+    const blob = new Blob([JSON.stringify(dump,null,2)],{type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `autopuerta_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    log('✅ Backup descargado','ok');
+  } catch(e){ log('❌ '+e.message,'err'); }
+};
+
+document.getElementById('btnMigrate').onclick = async () => {
+  logEl.innerHTML = '';
+  if(!confirm('¿Migrar ahora? upsert por id (re-ejecutable sin duplicados).')) return;
+
+  // Ping de conexión
+  try {
+    const {error: ping} = await sb.from('clientes').select('id').limit(1);
+    if(ping){ log('❌ Conexión fallida: '+ping.message,'err'); return; }
+    log('🔗 Conexión OK','ok');
+  } catch(e){ log('❌ Sin acceso a Supabase: '+e.message,'err'); return; }
+
+  try {
+    const db = await openDB();
+    let total = 0;
+    for (const [store, cfg] of Object.entries(MAP)){
+      let rows;
+      try { rows = await getAll(db, store); }
+      catch(e){ log(`⏭️ ${store}: no existe en local, salto`,'warn'); continue; }
+      if(!rows.length){ log(`— ${store}: vacío (0 registros)`); continue; }
+
+      const data = transform(rows, cfg);
+
+      for(let i=0;i<data.length;i+=BATCH){
+        const chunk = data.slice(i,i+BATCH);
+        const {error} = await sb.from(cfg.tabla).upsert(chunk,{onConflict:'id'});
+        if(error) log(`❌ ${cfg.tabla} lote ${Math.floor(i/BATCH)+1}: ${error.message}`,'err');
+        else { const n=Math.min(i+BATCH,data.length); total+=n;
+               log(`✅ ${cfg.tabla}: ${n}/${data.length} (acumulado ${total})`,'ok'); }
+      }
+    }
+    log(`\n🎉 Terminado. ${total} registros subidos.`,'ok');
+  } catch(e){ log('❌ '+e.message,'err'); }
+};
+</script>
+</body>
+</html>
