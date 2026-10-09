@@ -1,2 +1,2 @@
 # puertas-automaticas
-programa gestion
+aqui esta toda la informacion del programa.
