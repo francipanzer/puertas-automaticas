@@ -1,5 +1,18 @@
 const { jsPDF } = window.jspdf;
 
+// Inserta una imagen dentro de un recuadro conservando su proporción y centrada.
+function pdfAddImageContain(doc, data, x, y, w, h) {
+    try {
+        const props = doc.getImageProperties(data);
+        const ratio = Math.min(w / props.width, h / props.height);
+        const iw = props.width * ratio;
+        const ih = props.height * ratio;
+        doc.addImage(data, props.fileType || 'PNG', x + (w - iw) / 2, y + (h - ih) / 2, iw, ih);
+    } catch (e) {
+        try { doc.addImage(data, 'PNG', x, y, w, h); } catch (_) {}
+    }
+}
+
 async function urlToCompressedJPEG(url, maxDim = 1200, quality = 0.7) {
     try {
         const response = await fetch(url);
@@ -420,7 +433,7 @@ window.generatePDF_clientes = async function(id){
   showToast('PDF de cliente generado');
 };
 
-window.generatePDF_presupuesto = async function(id){
+window.generatePDF_presupuesto = async function(id, opts){
   const p = await dbGet('presupuestos',id);
   if(!p){showToast('Presupuesto no encontrado','error');return}
   const doc = await createBrandedPDF('Presupuesto '+p.id, 'Gestión de Puertas Automáticas', getStatusLabel(p.estado));
@@ -464,7 +477,12 @@ window.generatePDF_presupuesto = async function(id){
     y = pdfSectionTitle(doc,'Notas',y);
     pdfTextCard(doc,p.notas,X,y,W,PDF_BRAND.warn,PDF_BRAND.warnBorder,PDF_BRAND.warnText);
   }
-  addPDFFootersAllPages(doc); doc.save('presupuesto_'+p.id+'.pdf'); showToast('PDF de presupuesto generado');
+  addPDFFootersAllPages(doc);
+  const fileName = 'presupuesto_'+p.id+'.pdf';
+  if(opts && opts.asFile){
+    return new File([doc.output('blob')], fileName, {type:'application/pdf'});
+  }
+  doc.save(fileName); showToast('PDF de presupuesto generado');
 };
 
 window.generatePDF_partes = async function(id){
@@ -608,7 +626,7 @@ window.generatePDF_partes = async function(id){
   doc.text('FIRMA DEL CLIENTE', xIzq + boxW/2, yFirma + 5, {align:'center'});
 
   if(firmaCliente){
-    try { doc.addImage(firmaCliente, 'PNG', xIzq + 5, yFirma + 8, boxW - 10, boxH - 12); } catch(e){}
+    pdfAddImageContain(doc, firmaCliente, xIzq + 5, yFirma + 8, boxW - 10, boxH - 12);
   }
 
   doc.setFontSize(7); doc.setTextColor(100,116,139);
@@ -624,7 +642,7 @@ window.generatePDF_partes = async function(id){
   doc.text('FIRMA DEL TÉCNICO', xDer + boxW/2, yFirma + 5, {align:'center'});
 
   if(firmaTecnico){
-    try { doc.addImage(firmaTecnico, 'PNG', xDer + 5, yFirma + 8, boxW - 10, boxH - 12); } catch(e){}
+    pdfAddImageContain(doc, firmaTecnico, xDer + 5, yFirma + 8, boxW - 10, boxH - 12);
   }
 
   doc.setFontSize(7.5); doc.setTextColor(15,23,42);

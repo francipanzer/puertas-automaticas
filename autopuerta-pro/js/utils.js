@@ -332,75 +332,225 @@ function validarDNI(input){
 // ═══════════════════════════════════════════════════════════
 //  FIRMA DIGITAL (canvas mouse + touch)
 // ═══════════════════════════════════════════════════════════
+// Las firmas se guardan siempre en un lienzo lógico fijo (proporción 5:2), sea cual
+// sea el tamaño en pantalla, para que se vean igual en el móvil, el PDF y el escritorio.
+const FIRMA_W = 600, FIRMA_H = 240;
+
+function firmaDibujarTrazos(ctx, strokes, mapPoint, lineWidth, color){
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  strokes.forEach(points => {
+    if(!points.length) return;
+    const pts = points.map(mapPoint);
+    if(pts.length === 1){
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, lineWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for(let i = 1; i < pts.length - 1; i++){
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const last = pts[pts.length - 1];
+    ctx.lineTo(last.x, last.y);
+    ctx.stroke();
+  });
+}
+
+// Recorta los trazos, los escala sin deformar y los centra en el lienzo de destino.
+function firmaVolcarEnLienzo(canvas, strokes, sourceWidth){
+  const all = strokes.flat();
+  if(!all.length) return;
+  const xs = all.map(p => p.x), ys = all.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const boxW = Math.max(maxX - minX, 1), boxH = Math.max(maxY - minY, 1);
+  const pad = 14;
+  const scale = Math.min((FIRMA_W - pad * 2) / boxW, (FIRMA_H - pad * 2) / boxH, 2.5);
+  const offX = (FIRMA_W - boxW * scale) / 2 - minX * scale;
+  const offY = (FIRMA_H - boxH * scale) / 2 - minY * scale;
+  canvas.width = FIRMA_W;
+  canvas.height = FIRMA_H;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, FIRMA_W, FIRMA_H);
+  const lineWidth = Math.min(Math.max(sourceWidth * scale, 2.5), 6);
+  firmaDibujarTrazos(ctx, strokes, p => ({ x: p.x * scale + offX, y: p.y * scale + offY }), lineWidth, '#111');
+}
+
+// Pantalla completa para firmar con el dedo. Devuelve una promesa con los trazos, o null si se cancela.
+function abrirPadFirma(titulo){
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:3000;background:#0f172a;display:flex;flex-direction:column;padding:12px;gap:10px;touch-action:none;';
+    overlay.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;color:#fff;gap:12px">' +
+        '<strong style="font-size:16px">' + escapeHtml(titulo || 'Firma') + '</strong>' +
+        '<small style="opacity:.75;text-align:right">Firma con el dedo dentro del recuadro</small>' +
+      '</div>' +
+      '<div id="padWrap" style="flex:1;min-height:0;position:relative;background:#fff;border-radius:12px;overflow:hidden">' +
+        '<canvas id="padCanvas" style="position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block"></canvas>' +
+        '<div style="position:absolute;left:5%;right:5%;bottom:22%;border-bottom:2px dashed #cbd5e1;pointer-events:none"></div>' +
+        '<div style="position:absolute;left:5%;bottom:calc(22% + 6px);color:#94a3b8;font-size:20px;pointer-events:none">✕</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px">' +
+        '<button type="button" class="btn btn-outline" id="padClear" style="flex:1;min-height:48px">Borrar</button>' +
+        '<button type="button" class="btn btn-outline" id="padCancel" style="flex:1;min-height:48px">Cancelar</button>' +
+        '<button type="button" class="btn btn-primary" id="padOk" style="flex:2;min-height:48px" disabled>Aceptar</button>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const canvas = overlay.querySelector('#padCanvas');
+    const okBtn = overlay.querySelector('#padOk');
+    const ctx = canvas.getContext('2d');
+    let strokes = [];
+    let current = null;
+    let cssW = 1, cssH = 1;
+
+    const LINE = 3.2;
+    function repaint(){
+      const dpr = window.devicePixelRatio || 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+      firmaDibujarTrazos(ctx, strokes, p => ({ x: p.x * cssW, y: p.y * cssH }), LINE, '#111');
+    }
+    function resize(){
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      cssW = Math.max(rect.width, 1);
+      cssH = Math.max(rect.height, 1);
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      repaint();
+    }
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+
+    function pos(e){
+      const r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    }
+    canvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      current = [pos(e)];
+      strokes.push(current);
+      repaint();
+    });
+    canvas.addEventListener('pointermove', e => {
+      if(!current) return;
+      e.preventDefault();
+      (e.getCoalescedEvents ? e.getCoalescedEvents() : [e]).forEach(ev => current.push(pos(ev)));
+      repaint();
+    });
+    const end = e => {
+      if(!current) return;
+      current = null;
+      okBtn.disabled = !strokes.length;
+      if(e) e.preventDefault();
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    function close(result){
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('orientationchange', resize);
+      document.body.style.overflow = prevOverflow;
+      overlay.remove();
+      resolve(result);
+    }
+    overlay.querySelector('#padClear').addEventListener('click', () => {
+      strokes = []; current = null; okBtn.disabled = true; repaint();
+    });
+    overlay.querySelector('#padCancel').addEventListener('click', () => close(null));
+    okBtn.addEventListener('click', () => {
+      // Pasa de coordenadas normalizadas a píxeles de pantalla para conservar la proporción real.
+      const px = strokes.map(s => s.map(p => ({ x: p.x * cssW, y: p.y * cssH })));
+      close({ strokes: px, width: LINE });
+    });
+  });
+}
+
 function initFirmaCanvas(canvasId, opts = {}){
   const canvas = document.getElementById(canvasId);
   if(!canvas) return null;
-  
+
   const ctx = canvas.getContext('2d');
+  const color = opts.color || '#111';
+  const lineWidth = opts.width || 3;
+  const titulo = opts.title || canvas.getAttribute('data-firma-titulo') || 'Firma';
+
+  canvas.width = FIRMA_W;
+  canvas.height = FIRMA_H;
+  canvas.style.height = 'auto';
+  canvas.style.aspectRatio = FIRMA_W + ' / ' + FIRMA_H;
+  canvas.style.touchAction = 'none';
+  canvas.style.cursor = 'pointer';
+
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   let drawing = false;
-  let lastX, lastY;
-  
-  const color = opts.color || '#000';
-  const width = opts.width || 2;
-  
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width || 400;
-  canvas.height = rect.height || 120;
-  
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  
+  let last = null;
+
   function getPos(e){
     const r = canvas.getBoundingClientRect();
-    const t = e.touches ? e.touches[0] : e;
     return {
-      x: t.clientX - r.left,
-      y: t.clientY - r.top
+      x: (e.clientX - r.left) * (canvas.width / r.width),
+      y: (e.clientY - r.top) * (canvas.height / r.height)
     };
   }
-  
-  function startDraw(e){
-    e.preventDefault();
-    drawing = true;
-    const p = getPos(e);
-    lastX = p.x; lastY = p.y;
+
+  // En pantallas táctiles se firma en una pantalla completa; con ratón se dibuja directamente.
+  async function openPad(){
+    const result = await abrirPadFirma(titulo);
+    if(result && result.strokes.length) firmaVolcarEnLienzo(canvas, result.strokes, result.width);
   }
-  
-  function draw(e){
-    if(!drawing) return;
-    e.preventDefault();
-    const p = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(lastX, lastY);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    lastX = p.x; lastY = p.y;
+
+  if(coarse){
+    canvas.addEventListener('click', openPad);
+  }else{
+    canvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      drawing = true;
+      last = getPos(e);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, lineWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    canvas.addEventListener('pointermove', e => {
+      if(!drawing) return;
+      e.preventDefault();
+      const p = getPos(e);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      last = p;
+    });
+    const stop = () => { drawing = false; };
+    canvas.addEventListener('pointerup', stop);
+    canvas.addEventListener('pointercancel', stop);
   }
-  
-  function stopDraw(e){
-    if(e) e.preventDefault();
-    drawing = false;
-  }
-  
-  canvas.addEventListener('mousedown', startDraw);
-  canvas.addEventListener('mousemove', draw);
-  canvas.addEventListener('mouseup', stopDraw);
-  canvas.addEventListener('mouseleave', stopDraw);
-  
-  canvas.addEventListener('touchstart', startDraw, {passive:false});
-  canvas.addEventListener('touchmove', draw, {passive:false});
-  canvas.addEventListener('touchend', stopDraw, {passive:false});
-  canvas.addEventListener('touchcancel', stopDraw, {passive:false});
-  
+
   return {
     clear: ()=>{ ctx.clearRect(0,0,canvas.width,canvas.height); },
     getDataURL: ()=> canvas.toDataURL('image/png'),
-    hasSignature: ()=>{
-      const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
-      return imgData.data.some((c,i) => i%4===3 && c>0);
-    }
+    hasSignature: ()=> hasSignature(canvasId)
   };
 }
 
@@ -414,32 +564,19 @@ function clearFirmaCanvas(canvasId){
 // js/utils.js
 function hasSignature(canvasId) {
   const canvas = document.getElementById(canvasId);
-  if (!canvas) return false;
-
-  // Asegurar que el canvas tiene dimensiones válidas
-  if (!canvas.width || !canvas.height) return false;
+  if (!canvas || !canvas.width || !canvas.height) return false;
 
   try {
-    const ctx = canvas.getContext('2d');
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imgData.data;
-
-    // Verificar si hay píxeles que no sean completamente transparentes
-    // o que no sean blanco puro (si el fondo es blanco)
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    // Hay firma si algún píxel es visible y no es blanco puro opaco (fondo vacío).
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3];
-      const red = data[i];
-      const green = data[i + 1];
-      const blue = data[i + 2];
-
-      // Si el píxel no es transparente (alpha < 255) o no es blanco (255,255,255)
-      if (alpha < 255 || (red !== 255 && green !== 255 && blue !== 255)) {
+      if (alpha > 0 && !(alpha === 255 && data[i] === 255 && data[i + 1] === 255 && data[i + 2] === 255)) {
         return true;
       }
     }
   } catch (e) {
     console.error('Error al verificar firma:', e);
-    return false;
   }
   return false;
 }
@@ -447,28 +584,19 @@ function hasSignature(canvasId) {
 function pintarFirmaEnCanvas(canvasId, dataURL){
   const canvas = document.getElementById(canvasId);
   if(!canvas) return;
+  canvas.width = FIRMA_W;
+  canvas.height = FIRMA_H;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if(!dataURL) return;
-  
+
   const img = new Image();
   img.onload = function(){
-    const maxWidth = canvas.parentElement.clientWidth - 20;
-    const maxHeight = canvas.style.height ? parseInt(canvas.style.height) : 120;
-    
-    let w = img.width;
-    let h = img.height;
-    
-    if(w > maxWidth || h > maxHeight){
-      const ratio = Math.min(maxWidth/w, maxHeight/h);
-      w = w * ratio;
-      h = h * ratio;
-    }
-    
-    canvas.width = Math.round(w);
-    canvas.height = Math.round(h);
-    
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const ratio = Math.min(FIRMA_W / img.width, FIRMA_H / img.height);
+    const w = img.width * ratio;
+    const h = img.height * ratio;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img, (FIRMA_W - w) / 2, (FIRMA_H - h) / 2, w, h);
   };
   img.src = dataURL;
 }

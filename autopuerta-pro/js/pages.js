@@ -439,6 +439,7 @@ window.render_presupuestos = async function(el){
     '<div class="page-header"><div><h2>Presupuestos</h2><p>Genera y gestiona presupuestos</p></div>'+
     '<div class="header-actions">'+
       '<button class="btn btn-primary" onclick="showPresupuestoForm()"><i class="fas fa-plus"></i> Nuevo Presupuesto</button>'+
+      '<button class="btn btn-outline" onclick="showPlantillasPresupuesto()"><i class="fas fa-bookmark"></i> Plantillas</button>'+
       '<button class="btn btn-outline" onclick="generatePDF_presupuestos()"><i class="fas fa-file-pdf"></i> Exportar todo</button></div></div>'+
     '<div class="search-bar"><input type="text" placeholder="Buscar..." id="searchPres" oninput="renderPresupuestos()"></div>'+
     '<div class="card"><div  class="table-wrapper"><table><thead>'+
@@ -458,7 +459,9 @@ window.renderPresupuestos = async function(){
     '<td><span class="badge '+getBadgeClass(p.estado)+'">'+getStatusLabel(p.estado)+'</span></td>'+
     '<td class="actions-cell">'+
       '<button class="btn btn-outline btn-sm btn-icon" title="Editar" data-action="edit-presupuesto" data-id="'+escapeHtml(p.id)+'"><i class="fas fa-pen"></i></button>'+
+      '<button class="btn btn-outline btn-sm btn-icon" title="Enviar al cliente" onclick="sendPresupuesto(\''+p.id+'\')"><i class="fas fa-paper-plane"></i></button>'+
       '<button class="btn btn-outline btn-sm btn-icon" title="PDF" onclick="generatePDF_presupuesto(\''+p.id+'\')"><i class="fas fa-file-pdf"></i></button>'+
+      '<button class="btn btn-outline btn-sm btn-icon" title="Guardar como plantilla" onclick="savePresupuestoAsTemplate(\''+p.id+'\')"><i class="fas fa-bookmark"></i></button>'+
       '<button class="btn btn-outline btn-sm btn-icon" title="Duplicar" onclick="duplicatePresupuesto(\''+p.id+'\')"><i class="fas fa-copy"></i></button>'+
       '<button class="btn btn-outline btn-sm btn-icon" title="Eliminar" onclick="confirmDelete(\'Presupuesto '+escapeHtml(p.id)+'\', ()=>deletePresupuesto(\''+p.id+'\'))"><i class="fas fa-trash"></i></button>'+
     '</td></tr>'
@@ -519,11 +522,12 @@ function calcTotals(prefix){
   }
 }
 
-window.showPresupuestoForm = async function(id){
+window.showPresupuestoForm = async function(id, tpl){
   id = id ? String(id) : null;
   await dbGetAll('tiposPuerta').then(r=>{window.__tipos=r});
   window.__lineItems = {};
-  const p = id ? await dbGet('presupuestos',id) : {};
+  const p = id ? await dbGet('presupuestos',id)
+    : (tpl ? {notas:tpl.notas||'', lineItems:JSON.parse(JSON.stringify(tpl.lineItems||[]))} : {});
   const items = p.lineItems || [{descripcion:'',tipoId:'',cantidad:1,precio:0}];
   const lid = id ? 'pf_edit' : 'pf_new';
   window.__lineItems[lid] = items;
@@ -654,6 +658,84 @@ window.deletePresupuesto = async function(id){
   showToast('Presupuesto eliminado');navigateTo('presupuestos');
 };
 
+// ── Plantillas de presupuesto (guardadas en este dispositivo) ──
+const PLANTILLAS_KEY = 'valgom_plantillas_presupuesto';
+function getPlantillasPresupuesto(){
+  try { return JSON.parse(localStorage.getItem(PLANTILLAS_KEY)) || []; } catch(e){ return []; }
+}
+function setPlantillasPresupuesto(list){ localStorage.setItem(PLANTILLAS_KEY, JSON.stringify(list)); }
+
+window.savePresupuestoAsTemplate = async function(id){
+  const p = await dbGet('presupuestos',id);
+  if(!p) return;
+  const nombre = (prompt('Nombre de la plantilla:', 'Plantilla de '+(p.clienteNombre||p.id))||'').trim();
+  if(!nombre) return;
+  const list = getPlantillasPresupuesto();
+  list.push({id:uid(), nombre, notas:p.notas||'', lineItems:p.lineItems||[]});
+  setPlantillasPresupuesto(list);
+  showToast('Plantilla guardada');
+};
+
+window.showPlantillasPresupuesto = function(){
+  const list = getPlantillasPresupuesto();
+  const body = list.length
+    ? '<div style="display:flex;flex-direction:column;gap:8px">'+list.map(t=>
+        '<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:10px;border:1px solid var(--border,#e5e7eb);border-radius:8px">'+
+        '<div><strong>'+escapeHtml(t.nombre)+'</strong><div style="font-size:12px;color:var(--text-muted)">'+(t.lineItems||[]).length+' conceptos</div></div>'+
+        '<div style="display:flex;gap:6px"><button class="btn btn-primary btn-sm" onclick="usarPlantillaPresupuesto(\''+escapeHtml(t.id)+'\')">Usar</button>'+
+        '<button class="btn btn-outline btn-sm btn-icon" title="Eliminar" onclick="borrarPlantillaPresupuesto(\''+escapeHtml(t.id)+'\')"><i class="fas fa-trash"></i></button></div></div>'
+      ).join('')+'</div>'
+    : '<p style="color:var(--text-muted)">Aún no hay plantillas. Usa el icono de marcador en un presupuesto para guardarlo como plantilla.</p>';
+  openModal('Plantillas de presupuesto', body, '<button class="btn btn-outline" onclick="closeModal()">Cerrar</button>');
+};
+
+window.usarPlantillaPresupuesto = function(tid){
+  const t = getPlantillasPresupuesto().find(x=>x.id===tid);
+  if(!t) return;
+  closeModal();
+  showPresupuestoForm(null, t);
+};
+
+window.borrarPlantillaPresupuesto = function(tid){
+  setPlantillasPresupuesto(getPlantillasPresupuesto().filter(x=>x.id!==tid));
+  showPlantillasPresupuesto();
+};
+
+// ── Enviar presupuesto por email / compartir ──
+window.sendPresupuesto = async function(id){
+  const p = await dbGet('presupuestos',id);
+  if(!p){ showToast('Presupuesto no encontrado','error'); return; }
+  const cliente = p.clienteId ? await dbGet('clientes',p.clienteId) : null;
+  const email = (cliente && cliente.email) || '';
+  const asunto = 'Presupuesto '+p.id+' — Valgom';
+  const texto = 'Hola'+(p.clienteNombre?' '+p.clienteNombre:'')+',\n\nTe adjuntamos el presupuesto '+p.id+' por un total de '+formatCurrency(p.total)+' (IVA incluido).\n\nQuedamos a tu disposición para cualquier duda.\n\nUn saludo,\nValgom';
+  let enviado = false;
+  try {
+    const file = await window.generatePDF_presupuesto(id, {asFile:true});
+    if(file && navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:asunto, text:texto});
+      enviado = true;
+    } else if(file){
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 5000);
+      window.location.href = 'mailto:'+encodeURIComponent(email)+'?subject='+encodeURIComponent(asunto)+'&body='+encodeURIComponent(texto+'\n\n(Adjunta el PDF descargado: '+file.name+')');
+      showToast('PDF descargado: adjúntalo al correo que se ha abierto');
+      enviado = true;
+    }
+  } catch(err){
+    if(err && err.name === 'AbortError') return;
+    console.error(err);
+    showToast('No se pudo enviar: '+err.message,'error');
+    return;
+  }
+  if(enviado && p.estado === 'borrador'){
+    await dbPut('presupuestos', {...p, estado:'enviado'});
+    renderPresupuestos();
+  }
+};
+
 // ═══════════════════════════════════════════════════════════
 //  PARTES DE TRABAJO (CON CAMPO HORAS)
 // ═══════════════════════════════════════════════════════════
@@ -730,9 +812,9 @@ window.renderPartes = async function(){
     '</td></tr>'
   ).join('') || '<tr><td colspan="12" style="text-align:center;padding:30px;color:var(--text-muted)">Sin partes de trabajo</td></tr>';
 };
-window.showParteForm = async function(id) {
+window.showParteForm = async function(id, prefill) {
   id = id ? String(id) : null;
-  const p = id ? await dbGet('partesTrabajo', id) : {};
+  const p = id ? await dbGet('partesTrabajo', id) : (prefill || {});
   const clientes = await dbGetAll('clientes');
   const vehiculos = await dbGetAll('vehiculos');
   const empleados = window.isTechnician?.()
@@ -784,13 +866,14 @@ window.showParteForm = async function(id) {
   '</div>' +
   '<div style="margin-top:24px;padding-top:20px;border-top:2px solid var(--border)">' +
     '<h3 style="margin-bottom:16px;font-size:16px;color:var(--primary)">Firmas y validación</h3>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">' +
       '<div>' +
         '<label style="display:block;margin-bottom:6px;font-weight:600">Firma del Técnico</label>' +
         '<div style="border:2px dashed var(--border);border-radius:8px;padding:8px">' +
-          '<canvas id="pt_firma_tecnico" style="border:1px solid var(--border);border-radius:4px;touch-action:none;display:block;width:100%;height:120px"></canvas>' +
-          '<div style="margin-top:8px">' +
+          '<canvas id="pt_firma_tecnico" data-firma-titulo="Firma del técnico" style="border:1px solid var(--border);border-radius:4px;display:block;width:100%;background:#fff"></canvas>' +
+          '<div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
             '<button type="button" class="btn btn-outline btn-sm" onclick="clearFirmaCanvas(\'pt_firma_tecnico\')"><i class="fas fa-eraser"></i> Limpiar firma</button>' +
+            '<small class="firma-hint" style="color:var(--text-muted)">Toca el recuadro para firmar</small>' +
           '</div>' +
         '</div>' +
         '<div class="form-group" style="margin-top:10px"><label>DNI Técnico</label><input id="pt_dni_tecnico" value="' + escapeHtml(p.empleadoDni || '') + '" placeholder="12345678Z" readonly></div>' +
@@ -798,9 +881,10 @@ window.showParteForm = async function(id) {
       '<div>' +
         '<label style="display:block;margin-bottom:6px;font-weight:600">Firma del Cliente</label>' +
         '<div style="border:2px dashed var(--border);border-radius:8px;padding:8px">' +
-          '<canvas id="pt_firma_cliente" style="border:1px solid var(--border);border-radius:4px;touch-action:none;display:block;width:100%;height:120px"></canvas>' +
-          '<div style="margin-top:8px">' +
+          '<canvas id="pt_firma_cliente" data-firma-titulo="Firma del cliente" style="border:1px solid var(--border);border-radius:4px;display:block;width:100%;background:#fff"></canvas>' +
+          '<div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
             '<button type="button" class="btn btn-outline btn-sm" onclick="clearFirmaCanvas(\'pt_firma_cliente\')"><i class="fas fa-eraser"></i> Limpiar firma</button>' +
+            '<small class="firma-hint" style="color:var(--text-muted)">Toca el recuadro para firmar</small>' +
           '</div>' +
         '</div>' +
         '<div class="form-group" style="margin-top:10px"><label>DNI Cliente</label><input id="pt_dni_cliente" value="' + escapeHtml(clienteDni) + '" placeholder="12345678Z"></div>' +

@@ -44,7 +44,8 @@ const TABLA = {
   jornadas:      'jornadas',
   tableros:      'tableros',
   tarjetasTablero: 'tarjetas_tablero',
-  solicitudesMaterial: 'solicitudes_material'
+  solicitudesMaterial: 'solicitudes_material',
+  incidencias: 'incidencias'
 };
 
 // ── Renombrado camelCase ↔ snake_case ──────────────────────
@@ -96,7 +97,9 @@ const REN_OUT = {
   createdBy:'createdby',
   articuloId:'articuloid',
   presupuestoId:'presupuestoid',
-  employeeId:'employee_id'
+  employeeId:'employee_id',
+  notaTecnico:'notatecnico',
+  resueltaAt:'resueltaat'
 };
 const REN_IN = {
   updatedat:'updatedAt',
@@ -144,7 +147,9 @@ const REN_IN = {
   createdby:'createdBy',
   articuloid:'articuloId',
   presupuestoid:'presupuestoId',
-  employee_id:'employeeId'
+  employee_id:'employeeId',
+  notatecnico:'notaTecnico',
+  resueltaat:'resueltaAt'
 };
 
 function toDB(obj){
