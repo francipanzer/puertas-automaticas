@@ -1,5 +1,5 @@
 // realtime.js — Sincronización en tiempo real entre dispositivos
-const REALTIME_TABLES = ['empleados','clientes','partesTrabajo','vehiculos','presupuestos','almacen'];
+const REALTIME_TABLES = Object.keys(TABLA);
 
 REALTIME_TABLES.forEach(store => {
   const channel = supabaseDB

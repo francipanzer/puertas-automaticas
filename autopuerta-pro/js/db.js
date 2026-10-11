@@ -4,7 +4,7 @@
  *
  * Cambios vs v10.2:
  *  - KEY leída de window.SUPABASE_CONFIG (definido en index.html)
- *  - TABLA.partesTrabajo → 'partesTrabajo' (estaba 'partes_trabajo')
+ *  - TABLA.partesTrabajo → 'partes_trabajo' (esquema usado por los formularios)
  *  - REN_OUT/REN_IN ampliados: puertaIds, clienteId, tipoPuerta, kmInicial
  *  - REN_IN errata corregida: 'precocompra' → 'precocompra' (columna real en BD es precocompra)
  *  - dbGetAll: reintento sin .order('createdat') si la tabla no tiene la columna
@@ -22,7 +22,7 @@ if (!SUPABASE_KEY.startsWith('eyJ')) {
   console.error('[db.js] ❌ Falta anon key válida. Define window.SUPABASE_CONFIG en index.html.');
 }
 
-const supabaseDB = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabaseDB = window.sb || window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 window.supabaseDB = supabaseDB;
 
 // ── Mapping store → tabla real ─────────────────────────────
@@ -37,43 +37,81 @@ const TABLA = {
   informes:      'informes',
   puertas:       'puertas',
   revisiones:    'revisiones',
-  partesTrabajo: 'partesTrabajo',
+  partesTrabajo: 'partes_trabajo',
   cadenas:       'cadenas',
   rutas:         'rutas',
   articulos:     'articulos',
-  jornadas:     'jornadas'
+  jornadas:      'jornadas',
+  tableros:      'tableros',
+  tarjetasTablero: 'tarjetas_tablero',
+  solicitudesMaterial: 'solicitudes_material'
 };
 
 // ── Renombrado camelCase ↔ snake_case ──────────────────────
 const REN_OUT = {
   updatedAt:'updatedat',
+  createdAt:'createdat',
+  empleadoId:'empleadoid',
+  empleadoNombre:'empleadonombre',
+  empleadoDni:'empleadodni',
+  clienteDni:'clientedni',
+  firmaTecnico:'firmatecnico',
+  firmaCliente:'firmacliente',
+  horaEntrada:'hora_entrada',
+  horaSalida:'hora_salida',
+  vehiculoId:'vehiculoid',
+  ubicacionNombre:'ubicacionnombre',
+  ubicacionDireccion:'ubicaciondireccion',
   precioCompra:'preciocompra',
   precioVenta:'precioventa',
   stockMinimo:'stockminimo',
   puertaIds:'puertaids',
   clienteId:'clienteid',
+  tecnicoId:'tecnicoid',
   clienteNombre:'clientenombre',
   tipoPuerta:'tipopuerta',
   kmInicial:'km_inicial',
   puertaId:'puertaid',
+  boardId:'boardid',
+  dueDate:'fechalimite',
+  assigneeId:'asignadoid',
+  order:'orden',
   ubicacionId:'ubicacionid',
   matriculaAsociada:'matriculaasociada',
   medidasAncho:'medidasancho',
   medidasAlto:'medidasalto',
   anioInstalacion:'anioinstalacion',
   fechaRevision:'fecharevision',
+  ultimaRevision:'ultimorevision',
   frecuenciaMeses:'frecuenciameses',
-  proximaRevision:'proximaprevision',
+  proximaRevision:'proximarevision',
+  estadoTrasRevision:'estadotrasrevision',
   resultadoRev:'resultado',
   observacionesRev:'observaciones',
   // Clientes
   esCadena:'escadena',
   padreId:'padreid',
   cadenaId:'cadenaid',
-  rutaId:'rutaid'
+  rutaId:'rutaid',
+  createdBy:'createdby',
+  articuloId:'articuloid',
+  presupuestoId:'presupuestoid',
+  employeeId:'employee_id'
 };
 const REN_IN = {
   updatedat:'updatedAt',
+  createdat:'createdAt',
+  empleadoid:'empleadoId',
+  empleadonombre:'empleadoNombre',
+  empleadodni:'empleadoDni',
+  clientedni:'clienteDni',
+  firmatecnico:'firmaTecnico',
+  firmacliente:'firmaCliente',
+  hora_entrada:'horaEntrada',
+  hora_salida:'horaSalida',
+  vehiculoid:'vehiculoId',
+  ubicacionnombre:'ubicacionNombre',
+  ubicaciondireccion:'ubicacionDireccion',
   precocompra:'precioCompra',
   precioventa:'precioVenta',
   stockminimo:'stockMinimo',
@@ -83,20 +121,30 @@ const REN_IN = {
   tipopuerta:'tipoPuerta',
   km_inicial:'kmInicial',
   puertaid:'puertaId',
+  boardid:'boardId',
+  fechalimite:'dueDate',
+  asignadoid:'assigneeId',
+  orden:'order',
   ubicacionid:'ubicacionId',
   matriculaasociada:'matriculaAsociada',
   medidasancho:'medidasAncho',
   medidasalto:'medidasAlto',
   anioinstalacion:'anioInstalacion',
   fecharevision:'fechaRevision',
+  ultimorevision:'ultimaRevision',
   frecuenciameses:'frecuenciaMeses',
-  proximaprevision:'proximaRevision',
+  proximarevision:'proximaRevision',
+  estadotrasrevision:'estadoTrasRevision',
   resultado:'resultadoRev',
   observaciones:'observacionesRev',
   escadena:'escadena',
   padreid:'padreid',
   cadenaid:'cadenaid',
-  rutaid:'rutaid'
+  rutaid:'rutaid',
+  createdby:'createdBy',
+  articuloid:'articuloId',
+  presupuestoid:'presupuestoId',
+  employee_id:'employeeId'
 };
 
 function toDB(obj){
@@ -141,198 +189,430 @@ function openCache(){
   });
 }
 
-async function cacheRead(store){
+async function cacheReadEntry(store){
   try{
     const db=await openCache();
     return await new Promise(res=>{
       const rq=db.transaction(CACHE_STORE).objectStore(CACHE_STORE).get(store);
-      rq.onsuccess=()=>{
-        const e=rq.result;
-        res(e && Date.now()-e.ts < TTL ? e.data : null);
-      };
+      rq.onsuccess=()=>res(rq.result||null);
       rq.onerror=()=>res(null);
     });
   }catch(e){ return null; }
 }
 
-async function cacheWrite(store,data){
+async function cacheRead(store,allowStale=false){
+  const entry=await cacheReadEntry(store);
+  if(!entry || entry.data===null) return null;
+  if(!allowStale && (entry.complete===false || Date.now()-entry.ts>=TTL)) return null;
+  return entry.data;
+}
+
+async function cacheWrite(store,data,complete=data!==null){
   try{
     const db=await openCache();
     const tx=db.transaction(CACHE_STORE,'readwrite');
-    tx.objectStore(CACHE_STORE).put({data,ts:Date.now()},store);
+    tx.objectStore(CACHE_STORE).put({data,ts:Date.now(),complete},store);
     return new Promise(res=>{tx.oncomplete=()=>res(true);tx.onerror=()=>res(false);});
   }catch(e){ return false; }
 }
 
-async function cacheInvalidate(store){ await cacheWrite(store,null); }
+async function cacheInvalidate(store){
+  const entry=await cacheReadEntry(store);
+  const db=await openCache();
+  const tx=db.transaction(CACHE_STORE,'readwrite');
+  tx.objectStore(CACHE_STORE).put({data:entry?.data??[],ts:0,complete:false},store);
+  return new Promise(res=>{tx.oncomplete=()=>res(true);tx.onerror=()=>res(false);});
+}
+
+async function cacheUpdateStore(store,update){
+  const entry=await cacheReadEntry(store);
+  const rows=Array.isArray(entry?.data)?entry.data:[];
+  const next=update(rows);
+  await cacheWrite(store,next,entry ? entry.complete!==false : false);
+}
+
+function isNetworkError(error){
+  const message=String(error?.message||error||'').toLowerCase();
+  return !navigator.onLine || error instanceof TypeError || /fetch|network|timeout|timed out|connection|offline|abort/.test(message);
+}
+
+function queueRecordId(item){
+  if(item.recordId!==undefined && item.recordId!==null) return String(item.recordId);
+  if(item.action==='delete'){
+    const id=String(item.id||'');
+    return id.startsWith('SYNC-') ? null : id;
+  }
+  return item.data?.id===undefined ? null : String(item.data.id);
+}
+
+function readSyncQueue(){
+  try{
+    const queue=JSON.parse(localStorage.getItem('autopuerta_sync_queue')||'[]');
+    return Array.isArray(queue) ? queue : [];
+  }catch(e){ return []; }
+}
+
+function writeSyncQueue(queue){
+  localStorage.setItem('autopuerta_sync_queue',JSON.stringify(queue));
+  window.dispatchEvent(new CustomEvent('autopuerta:sync-state',{detail:{pending:queue.length,online:navigator.onLine}}));
+}
+
+async function enqueueSyncOperation(item){
+  const recordId=item.action==='delete' ? String(item.id) : queueRecordId(item);
+  const entry={...item,recordId,ts:Date.now(),queueId:'SYNC-'+Date.now()+'-'+Math.random().toString(36).slice(2,8)};
+  const queue=readSyncQueue().filter(pending=>{
+    return !(pending.store===entry.store && recordId!==null && queueRecordId(pending)===recordId);
+  });
+  queue.push(entry);
+  writeSyncQueue(queue);
+  if(navigator.onLine) setTimeout(()=>flushSyncQueue(),0);
+  return entry;
+}
+
+async function cacheApplyPending(store,rows){
+  const queue=await dbSyncQueueGetPending();
+  return queue.filter(item=>item.store===store).reduce((result,item)=>{
+    const id=queueRecordId(item);
+    if(id===null) return result;
+    const index=result.findIndex(record=>String(record.id)===id);
+    if(item.action==='delete'){
+      if(index!==-1) result.splice(index,1);
+    }else if(item.data){
+      const record={...item.data,id:item.data.id||id};
+      if(index===-1) result.push(record);
+      else result[index]=record;
+    }
+    return result;
+  },Array.isArray(rows)?rows.slice():[]);
+}
 
 // ── Helpers CRUD ──────────────────────────────────────────
 async function openDB(){ return supabaseDB; }
 
+function rejectAuthenticatedOfflineWrite(){
+  if(window.authState?.user && !navigator.onLine){
+    throw new Error('Esta acción requiere conexión para proteger los permisos de la cuenta.');
+  }
+}
+
+window.dbGetTechnicianEmployee=async function(){
+  const {data,error}=await supabaseDB.rpc('get_my_employee');
+  if(error) throw error;
+  return data;
+};
+
+window.clearAuthenticatedCache=async function(){
+  for(const store of Object.keys(TABLA)) await cacheWrite(store,[],false);
+  await dbSyncQueueClear();
+};
+
 async function dbAdd(store,data){
+  rejectAuthenticatedOfflineWrite();
+  if(store==='partesTrabajo' && !navigator.onLine){
+    throw new Error('Para crear un parte hace falta conexión; Supabase debe asignarle su ID.');
+  }
   const tableName=TABLA[store]||store;
-  const obj=toDB(data);
-  if(!obj.id){
+  const input={...data};
+  if(['partesTrabajo','revisiones','solicitudesMaterial'].includes(store) && window.authState?.user && !Object.prototype.hasOwnProperty.call(input,'createdBy')){
+    input.createdBy=window.authState.user.id;
+  }
+  const obj=toDB(input);
+  if(!obj.id && store !== 'partesTrabajo'){
     const pref=(store==='partesTrabajo'?'PARTE':store.slice(0,3).toUpperCase());
     obj.id=nextId(pref);
   }
-  const {data:result,error}=await supabaseDB.from(tableName).insert(obj).select().single();
-  if(error) throw error;
-  cacheInvalidate(store);
-  return fromJS(result);
+  const local=fromJS(obj);
+  if(!navigator.onLine){
+    await cacheUpdateStore(store,rows=>{rows.push(local);return rows;});
+    await enqueueSyncOperation({action:'put',store,data:local});
+    return local;
+  }
+  try{
+    const insertQuery=supabaseDB.from(tableName).insert(obj);
+    const {data:result,error}=await (store==='partesTrabajo' && window.isTechnician?.()
+      ? insertQuery.select('id').maybeSingle()
+      : insertQuery.select().maybeSingle());
+    if(error) {
+      if(String(error.code || '').toUpperCase() === 'PGRST116') return local;
+      throw error;
+    }
+    const saved = result ? fromJS({...obj,...result}) : local;
+    await cacheUpdateStore(store,rows=>{rows.push(saved);return rows;});
+    return saved;
+  }catch(error){
+    if(!isNetworkError(error) && String(error?.code || '').toUpperCase() !== 'PGRST116') throw error;
+    if(window.authState?.user) throw error;
+    await cacheUpdateStore(store,rows=>{rows.push(local);return rows;});
+    await enqueueSyncOperation({action:'put',store,data:local});
+    return local;
+  }
 }
 
 async function dbCreate(store,data){ return dbAdd(store,data); }
 
 async function dbPut(store,data){
+  rejectAuthenticatedOfflineWrite();
   const tableName=TABLA[store]||store;
-  const obj=toDB(data);
+  const input={...data};
+  if(['partesTrabajo','revisiones','solicitudesMaterial'].includes(store) && window.authState?.user && !Object.prototype.hasOwnProperty.call(input,'createdBy')){
+    input.createdBy=window.authState.user.id;
+  }
+  const obj=toDB(input);
+  if(!obj.id && store === 'partesTrabajo'){
+    throw new Error('No se puede actualizar un parte sin su ID.');
+  }
   if(!obj.id){
     const pref=(store==='partesTrabajo'?'PARTE':store.slice(0,3).toUpperCase());
     obj.id=nextId(pref);
   }
-  const {data:result,error}=await supabaseDB.from(tableName).upsert(obj).select().single();
-  if(error) throw error;
-  cacheInvalidate(store);
-  return fromJS({...result,id:obj.id});
+  const local=fromJS(obj);
+  const update=rows=>{
+    const index=rows.findIndex(record=>String(record.id)===String(obj.id));
+    if(index===-1) rows.push(local);
+    else rows[index]=local;
+    return rows;
+  };
+  if(!navigator.onLine){
+    await cacheUpdateStore(store,update);
+    await enqueueSyncOperation({action:'put',store,data:local});
+    return local;
+  }
+  try{
+    const upsertQuery=supabaseDB.from(tableName).upsert(obj);
+    const {data:result,error}=await (store==='partesTrabajo' && window.isTechnician?.()
+      ? upsertQuery.select('id').maybeSingle()
+      : upsertQuery.select().maybeSingle());
+    if(error) {
+      if(String(error.code || '').toUpperCase() === 'PGRST116') return local;
+      throw error;
+    }
+    const saved = result ? fromJS({...obj,...result,id:obj.id}) : local;
+    await cacheUpdateStore(store,rows=>{
+      const index=rows.findIndex(record=>String(record.id)===String(obj.id));
+      if(index===-1) rows.push(saved);
+      else rows[index]=saved;
+      return rows;
+    });
+    return saved;
+  }catch(error){
+    if(!isNetworkError(error) && String(error?.code || '').toUpperCase() !== 'PGRST116') throw error;
+    if(window.authState?.user) throw error;
+    await cacheUpdateStore(store,update);
+    await enqueueSyncOperation({action:'put',store,data:local});
+    return local;
+  }
 }
 
 async function dbGet(store,id){
-  const cached=await cacheRead(store);
-  if(cached){
-    const found=cached.find(r=>String(r.id)===String(id));
-    if(found) return found;
+  const entry=await cacheReadEntry(store);
+  const cached=entry?.data;
+  const found=Array.isArray(cached) ? cached.find(r=>String(r.id)===String(id)) : null;
+  const pending=(await dbSyncQueueGetPending()).filter(item=>item.store===store && queueRecordId(item)===String(id)).pop();
+  if(pending) return pending.action==='delete' ? null : pending.data;
+  if(!navigator.onLine) return found||null;
+  if(store==='partesTrabajo' && window.authState?.user){
+    const {data,error}=await supabaseDB.rpc('get_app_work_parts',{p_id:String(id)});
+    if(error) throw error;
+    return Array.isArray(data) && data.length ? fromJS(data[0]) : null;
+  }
+  if(store==='almacen' && window.authState?.user){
+    const {data,error}=await supabaseDB.rpc('get_app_warehouse');
+    if(error) throw error;
+    const rows=fromJSArray(data||[]);
+    const item=rows.find(row=>String(row.id)===String(id))||null;
+    return item;
   }
   const tableName=TABLA[store]||store;
-  const {data,error}=await supabaseDB.from(tableName).select().eq('id',id).single();
-  if(error) throw error;
-  return fromJS(data);
+  try{
+    const {data,error}=await supabaseDB.from(tableName).select().eq('id',id).maybeSingle();
+    if(error) {
+      if(String(error.code || '').toUpperCase() === 'PGRST116') return found || null;
+      throw error;
+    }
+    return data ? fromJS(data) : (found || null);
+  }catch(error){
+    if(isNetworkError(error)) return found||null;
+    if(String(error?.code || '').toUpperCase() === 'PGRST116') return found||null;
+    throw error;
+  }
 }
 
 async function dbGetAll(store){
   const tableName=TABLA[store]||store;
-  const cached=await cacheRead(store);
+  const entry=await cacheReadEntry(store);
+  const cached=entry?.data;
+  const cacheFresh=Array.isArray(cached) && entry.complete!==false && Date.now()-entry.ts<TTL;
+  if(!navigator.onLine) return cacheApplyPending(store,Array.isArray(cached)?cached:[]);
+  if(store==='partesTrabajo' && window.authState?.user){
+    const {data,error}=await supabaseDB.rpc('get_app_work_parts');
+    if(error) throw error;
+    const result=await cacheApplyPending(store,fromJSArray(data||[]));
+    await cacheWrite(store,result);
+    return result;
+  }
+  if(store==='almacen' && window.authState?.user){
+    const {data,error}=await supabaseDB.rpc('get_app_warehouse');
+    if(error) throw error;
+    const result=await cacheApplyPending(store,fromJSArray(data||[]));
+    await cacheWrite(store,result);
+    return result;
+  }
+  if(cacheFresh){
+    const result=await cacheApplyPending(store,cached);
+    if(navigator.onLine) refreshStoreCache(store,tableName).catch(()=>{});
+    return result;
+  }
+  try{
+    return await refreshStoreCache(store,tableName);
+  }catch(error){
+    if(isNetworkError(error)) return cacheApplyPending(store,Array.isArray(cached)?cached:[]);
+    throw error;
+  }
+}
 
-  // Siempre consultamos Supabase; la caché solo acelera el primer pintado
-  supabaseDB.from(tableName).select().order('createdat',{ascending:false})
-    .then(({data,error})=>{
-      if(error){ // tablas sin createdat → reintento simple
-        return supabaseDB.from(tableName).select();
-      }
-      return {data,error};
-    })
-    .then(async res=>{
-      if(res && !res.error){
-        const fresh=fromJSArray(res.data||[]);
-        await cacheWrite(store,fresh);
-        if(window.__onDataSynced) window.__onDataSynced(store, fresh); // repinta si hay listener
-      }
-    })
-    .catch(()=>{});
-
-  if(cached) return cached;          // pintamos rápido con lo que hay
+async function refreshStoreCache(store,tableName){
   const {data,error}=await supabaseDB.from(tableName).select();
   if(error) throw error;
-  const result=fromJSArray(data||[]);
+  const result=await cacheApplyPending(store,fromJSArray(data||[]));
   await cacheWrite(store,result);
+  if(window.__onDataSynced) window.__onDataSynced(store,result);
   return result;
 }
 
 async function dbDelete(store,id){
+  rejectAuthenticatedOfflineWrite();
   const tableName=TABLA[store]||store;
-  const {error}=await supabaseDB.from(tableName).delete().eq('id',id);
-  if(error) throw error;
-  cacheInvalidate(store);
+  const update=rows=>rows.filter(record=>String(record.id)!==String(id));
+  if(!navigator.onLine){
+    await cacheUpdateStore(store,update);
+    await enqueueSyncOperation({action:'delete',store,id});
+    return;
+  }
+
+  try{
+    const {error}=await supabaseDB.from(tableName).delete().eq('id',id);
+    if(error) throw error;
+    await cacheUpdateStore(store,update);
+  }catch(error){
+    if(!isNetworkError(error)) throw error;
+    if(window.authState?.user) throw error;
+    await cacheUpdateStore(store,update);
+    await enqueueSyncOperation({action:'delete',store,id});
+  }
 }
 
 // ── Índices genéricos ──────────────────────────────────────
 async function dbGetByIndex(store,indexName,value){
-  const tableName=TABLA[store]||store;
-  const col=REN_OUT[indexName]||indexName;
-  const {data,error}=await supabaseDB.from(tableName).select().eq(col,value);
-  if(error) throw error;
-  return fromJSArray(data||[]);
+  const rows=await dbGetAll(store);
+  const column=REN_IN[REN_OUT[indexName]||indexName]||indexName;
+  return rows.filter(row=>String(row[column]??row[indexName])===String(value));
 }
 
 async function dbGetByIndexRange(store,indexName,range){
-  const tableName=TABLA[store]||store;
-  let query=supabaseDB.from(tableName).select();
-  if(range.gt){
-    const[col,val]=range.gt;
-    if(indexName.includes('matricula_fecha')){
-      query=query.eq('matricula',val[0]).gte('fecha',val[1]);
-    }else{
-      query=query.gt(REN_OUT[col]||col,val);
-    }
+  const rows=await dbGetAll(store);
+  if(range && ('lower' in range || 'upper' in range)){
+    return rows.filter(row=>{
+      const key=indexName.includes('matricula_fecha')
+        ? [row.matricula||'',String(row.fecha||'').slice(0,10)]
+        : row[REN_IN[REN_OUT[indexName]||indexName]||indexName];
+      try{
+        if(range.lower!==undefined){
+          const cmp=indexedDB.cmp(key,range.lower);
+          if(cmp<0 || (cmp===0&&range.lowerOpen)) return false;
+        }
+        if(range.upper!==undefined){
+          const cmp=indexedDB.cmp(key,range.upper);
+          if(cmp>0 || (cmp===0&&range.upperOpen)) return false;
+        }
+        return true;
+      }catch(e){ return false; }
+    });
   }
-  if(range.lt){
-    const[col,val]=range.lt;
-    if(indexName.includes('matricula_fecha')){
-      query=query.eq('matricula',val[0]).lte('fecha',val[1]);
-    }else{
-      query=query.lt(REN_OUT[col]||col,val);
+  return rows.filter(row=>{
+    if(!range.gt&&!range.lt) return true;
+    const columnValue=pair=>{
+      const [column]=pair;
+      return row[REN_IN[REN_OUT[column]||column]||column];
+    };
+    if(range.gt){
+      const [column,value]=range.gt;
+      if(columnValue(range.gt)<=value) return false;
     }
-  }
-  const {data,error}=await query;
-  if(error) throw error;
-  return fromJSArray(data||[]);
+    if(range.lt){
+      const [column,value]=range.lt;
+      if(columnValue(range.lt)>=value) return false;
+    }
+    return true;
+  });
 }
 
 // ── Cola offline (localStorage) ────────────────────────────
 async function dbSyncQueuePush(item){
-  const queue=JSON.parse(localStorage.getItem('autopuerta_sync_queue')||'[]');
-  const entry={...item,ts:Date.now(),id:'SYNC-'+Date.now()+'-'+Math.random().toString(36).slice(2,8)};
-  queue.push(entry);
-  localStorage.setItem('autopuerta_sync_queue',JSON.stringify(queue));
-
-  if(navigator.onLine){
-    try{
-      const tableName=TABLA[item.store]||item.store;
-      if(item.action==='delete'){
-        await supabaseDB.from(tableName).delete().eq('id',item.id);
-      }else{
-        await supabaseDB.from(tableName).upsert(toDB(item.data));
-      }
-      localStorage.setItem('autopuerta_sync_queue',JSON.stringify(queue.filter(q=>q.id!==entry.id)));
-    }catch(e){
-      console.warn('[SyncQueue] queda en cola:',e.message);
-    }
-  }
-  return entry;
+  return enqueueSyncOperation(item);
 }
 
-async function dbSyncQueueGetPending(){
-  return JSON.parse(localStorage.getItem('autopuerta_sync_queue')||'[]');
-}
+async function dbSyncQueueGetPending(){ return readSyncQueue(); }
 
 async function dbSyncQueueComplete(id){
-  const q=JSON.parse(localStorage.getItem('autopuerta_sync_queue')||'[]');
-  localStorage.setItem('autopuerta_sync_queue',JSON.stringify(q.filter(x=>x.id!==id)));
+  const queue=readSyncQueue();
+  writeSyncQueue(queue.filter(item=>(item.queueId||item.id)!==id));
 }
 
 async function dbSyncQueueClear(){
-  localStorage.removeItem('autopuerta_sync_queue');
+  writeSyncQueue([]);
 }
 
-window.addEventListener('online',async()=>{
-  const queue=JSON.parse(localStorage.getItem('autopuerta_sync_queue')||'[]');
-  if(!queue.length) return;
-  const remaining=[];
-  for(const item of queue){
-    try{
-      const tableName=TABLA[item.store]||item.store;
-      if(item.action==='delete'){
-        await supabaseDB.from(tableName).delete().eq('id',item.id);
-      }else{
-        await supabaseDB.from(tableName).upsert(toDB(item.data));
+let syncFlushPromise=null;
+let syncRetryTimer=null;
+let syncRetryDelay=5000;
+
+function scheduleSyncRetry(){
+  if(!navigator.onLine || syncRetryTimer) return;
+  syncRetryTimer=setTimeout(()=>{
+    syncRetryTimer=null;
+    flushSyncQueue();
+  },syncRetryDelay);
+  syncRetryDelay=Math.min(syncRetryDelay*2,300000);
+}
+
+async function flushSyncQueue(){
+  if(!navigator.onLine || !window.authState?.user) return;
+  if(syncFlushPromise) return syncFlushPromise;
+  syncFlushPromise=(async()=>{
+    const queue=readSyncQueue();
+    for(const item of queue){
+      try{
+        const tableName=TABLA[item.store]||item.store;
+        let response;
+        if(item.action==='delete'){
+          const recordId=item.recordId??(String(item.id||'').startsWith('SYNC-')?null:item.id);
+          if(recordId===null || recordId===undefined) throw new Error('Operación de borrado sin id de registro');
+          response=await supabaseDB.from(tableName).delete().eq('id',recordId);
+        }else{
+          response=await supabaseDB.from(tableName).upsert(toDB(item.data));
+        }
+        if(response.error) throw response.error;
+        await dbSyncQueueComplete(item.queueId||item.id);
+      }catch(error){
+        console.warn('[SyncQueue] operación conservada para reintento:',error.message);
+        scheduleSyncRetry();
+        break;
       }
-    }catch(e){
-      remaining.push(item);
     }
-  }
-  localStorage.setItem('autopuerta_sync_queue',JSON.stringify(remaining));
-  console.log('[SyncQueue] pendientes tras reintento:',remaining.length);
-});
+    const pending=readSyncQueue();
+    if(!pending.length) syncRetryDelay=5000;
+    window.dispatchEvent(new CustomEvent('autopuerta:sync-state',{detail:{pending:pending.length,online:navigator.onLine}}));
+    return pending.length;
+  })().finally(()=>{
+    syncFlushPromise=null;
+    if(navigator.onLine && readSyncQueue().length) scheduleSyncRetry();
+  });
+  return syncFlushPromise;
+}
+
+window.addEventListener('online',()=>flushSyncQueue());
+window.addEventListener('offline',()=>window.dispatchEvent(new CustomEvent('autopuerta:sync-state',{detail:{pending:readSyncQueue().length,online:false}})));
+setTimeout(()=>flushSyncQueue(),0);
 
 // ── Seed protegido por flag ────────────────────────────────
 async function seedIfEmpty(){

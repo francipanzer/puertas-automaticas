@@ -271,8 +271,11 @@ function abrirCamara(parteId, callback){
   });
 
   // Inyectar botones donde falten
-  function injectVoiceButtons(){
-    document.querySelectorAll('input[type="text"], textarea').forEach(el => {
+  function injectVoiceButtons(root=document){
+    const inputs = [];
+    if(root.matches?.('input[type="text"], textarea')) inputs.push(root);
+    root.querySelectorAll?.('input[type="text"], textarea').forEach(el => inputs.push(el));
+    inputs.forEach(el => {
       if(el.classList.contains('only-num') ||
          el.classList.contains('only-num-dec') ||
          (el.id && el.id.startsWith('search')) ||
@@ -293,8 +296,12 @@ function abrirCamara(parteId, callback){
     });
   }
 
-  // Intervalo ligero: revisa cada 800ms si hay inputs sin botón (modales recién abiertos)
-  setInterval(injectVoiceButtons, 800);
+  const voiceObserver = new MutationObserver(mutations => {
+    mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+      if(node.nodeType === Node.ELEMENT_NODE) injectVoiceButtons(node);
+    }));
+  });
+  voiceObserver.observe(document.body, {childList:true, subtree:true});
   injectVoiceButtons();
 })();
 // ═══════════════════════════════════════════════════════════
@@ -492,10 +499,14 @@ window.confirmDelete = function(itemName, callback){
   };
 };
 // ── Cerrar modal ──
-window.closeModal = function(){
-  const overlay = document.getElementById('modalOverlay');
-  if(overlay) overlay.style.display = 'none';
-};
+if (typeof window.closeModal !== 'function') {
+  window.closeModal = function(){
+    const overlay = document.getElementById('modalOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    overlay.style.display = '';
+  };
+}
 // ═══════════════════════════════════════════════════════════
 //  VALIDACIÓN DE FORMULARIOS EN LÍNEA
 // ═══════════════════════════════════════════════════════════
@@ -687,11 +698,10 @@ function getDiasRevisionByTipo(tipo) {
   return TIPOS_PUERTA[tipo]?.diasRevision || 365; // fallback conservador
 }
 
-// Calcular próxima revisión según reglas de negocio acordadas
-function calcularProximaRevision(tipo, ultimaRevision) {
+// Calcular próxima revisión para PUERTAS según tipo
+function calcularProximaRevisionPuerta(tipo, ultimaRevision) {
   const dias = getDiasRevisionByTipo(tipo);
   if (!ultimaRevision) {
-    // Regla: si nunca se revisó → 1 enero del año siguiente
     const d = new Date();
     return `${d.getFullYear() + 1}-01-01`;
   }
@@ -699,6 +709,18 @@ function calcularProximaRevision(tipo, ultimaRevision) {
   base.setDate(base.getDate() + dias);
   return base.toISOString().slice(0, 10);
 }
+
+// Compatibilidad: cálculo de fechas para RUTAS (por meses)
+function calcularProximaRevisionRuta(ultimaRevisionISO, meses = 6) {
+  if (!ultimaRevisionISO) return null;
+  const fecha = new Date(ultimaRevisionISO);
+  fecha.setMonth(fecha.getMonth() + meses);
+  return fecha.toISOString();
+}
+
+window.calcularProximaRevisionPuerta = calcularProximaRevisionPuerta;
+window.calcularProximaRevisionRuta = calcularProximaRevisionRuta;
+window.calcularProximaRevision = calcularProximaRevisionRuta;
 // ── Toast simple ──
 function toast(msg, ms = 2500) {
   const cont = document.getElementById('toastContainer');
@@ -727,72 +749,49 @@ window.saveRuta = async function () {
   const ultimaVal = document.getElementById('form-ruta-ultima')?.value;
   const ultimorevision = ultimaVal ? new Date(ultimaVal + 'T00:00:00').toISOString() : null;
 
-  // Validación
   if (!nombre) { mostrarToast('El nombre de la ruta es obligatorio', 'error'); return false; }
   if (!cadenaid) { mostrarToast('Selecciona la cadena a la que pertenece', 'error'); return false; }
 
   const ahora = new Date().toISOString();
-
   const ruta = {
-    id: idExistente || String(Date.now()),
+    id: idExistente || window.db.nextId('RUT'),
     nombre,
     cadenaid,
+    cadenaId: cadenaid,
     frecuenciameses,
+    frecuenciaMeses: frecuenciameses,
     orden,
     ultimorevision,
-    proximarevision: calcularProximaRevision(ultimorevision, frecuenciameses),
+    ultimaRevision: ultimorevision,
+    proximarevision: calcularProximaRevisionRuta(ultimorevision, frecuenciameses),
+    proximaRevision: calcularProximaRevisionRuta(ultimorevision, frecuenciameses),
     updatedat: ahora
   };
 
   try {
-    if (idExistente) {
-      // UPDATE: conserva createdat original
-      const { error } = await sb.from('rutas').update({
-        nombre: ruta.nombre,
-        cadenaid: ruta.cadenaid,
-        frecuenciameses: ruta.frecuenciameses,
-        orden: ruta.orden,
-        ultimorevision: ruta.ultimorevision,
-        proximarevision: ruta.proximarevision,
-        updatedat: ahora
-      }).eq('id', idExistente);
-      if (error) throw error;
-    } else {
-      // INSERT: si no se pasó orden, calculamos siguiente
-      if (!orden) {
-        const { count } = await sb.from('rutas')
-          .select('*', { count: 'exact', head: true })
-          .eq('cadenaid', cadenaid);
-        ruta.orden = count || 0;
-      }
-      ruta.createdat = ahora;
-
-      const { error } = await sb.from('rutas').insert(ruta);
-      if (error) throw error;
+    if(!idExistente){
+      if(!orden) ruta.orden=(await getRutasByCadena(cadenaid)).length;
+      ruta.createdat=ahora;
     }
+    if (cadenaid) {
+      window.setCurrentCadenId(cadenaid);
+      localStorage.setItem('cadenaId', String(cadenaid));
+    }
+    await dbPut('rutas',ruta);
   } catch (e) {
-    console.error('saveRuta Supabase falló:', e.message);
-    mostrarToast('Sin conexión: guardado solo en este dispositivo', 'warning');
-  }
-
-  // IndexedDB SIEMPRE (fuente de verdad offline)
-  try {
-    await dbPut('rutas', { ...ruta });
-  } catch (e) {
-    console.error('saveRuta IndexedDB falló:', e);
-    mostrarToast('Error guardando en el dispositivo', 'error');
+    console.error('saveRuta falló:', e);
+    mostrarToast('Error guardando la ruta', 'error');
     return false;
   }
 
   closeModal?.();
-mostrarToast(idExistente ? 'Ruta actualizada' : 'Ruta creada', 'success');
+  mostrarToast(idExistente ? 'Ruta actualizada' : 'Ruta creada', 'success');
 
-// Recargar la vista de rutas con la cadena que tiene el formulario
-if (typeof render_rutas === 'function') {
-  const sel = document.getElementById('form-ruta-cadena');
-  if (sel && sel.value) render_rutas(sel.value);
-}
-return true;
+  if (typeof render_rutas === 'function') {
+    const sel = document.getElementById('form-ruta-cadena');
+    if (sel && sel.value) render_rutas(sel.value);
+  }
+  return true;
 };
 // ═══════════════════════════════════════════════════════════
 //  PENDIENTES DE REVISIÓN (Rutas y Clientes)
@@ -805,19 +804,24 @@ async function getPendientesRevision() {
 
   const pendientes = [];
 
-  // 1. Rutas pendientes
   try {
     const todasRutas = await dbGetAll('rutas');
     for (const r of todasRutas) {
-      if (!r.proximaRevision) continue;
-      const proxima = new Date(r.proximaRevision);
+      const ruta = {
+        ...r,
+        cadenaId: r.cadenaId ?? r.cadenaid ?? null,
+        proximaRevision: r.proximaRevision ?? r.proximarevision ?? null,
+        ultimaRevision: r.ultimaRevision ?? r.ultimorevision ?? null,
+      };
+      if (!ruta.proximaRevision) continue;
+      const proxima = new Date(ruta.proximaRevision);
       if (proxima <= treintaDias) {
         pendientes.push({
-          id: r.id,
+          id: ruta.id,
           tipo: 'ruta',
-          nombre: r.nombre,
-          detalle: `Ruta ${r.nombre} (Cadena ${r.cadenaId})`,
-          proxima: r.proximaRevision,
+          nombre: ruta.nombre,
+          detalle: `Ruta ${ruta.nombre} (Cadena ${ruta.cadenaId})`,
+          proxima: ruta.proximaRevision,
           dias: Math.ceil((proxima - hoy) / (1000*60*60*24)),
           clase: proxima < hoy ? 'badge-red' : 'badge-yellow'
         });
@@ -878,6 +882,16 @@ async function getAllCadenas() {
 
 async function getRutasByCadena(cadenaId) {
   if (!cadenaId) return [];
-  return (await window.db.dbGetAll('rutas'))
-    .filter(r => r.cadenaId === cadenaId);
+  const rutas = await dbGetAll('rutas');
+  return rutas
+    .map(r => ({
+      ...r,
+      cadenaId: r.cadenaId ?? r.cadenaid ?? null,
+      cadenaid: r.cadenaid ?? r.cadenaId ?? null,
+      proximaRevision: r.proximaRevision ?? r.proximarevision ?? null,
+      proximarevision: r.proximarevision ?? r.proximaRevision ?? null,
+      ultimaRevision: r.ultimaRevision ?? r.ultimorevision ?? null,
+      ultimorevision: r.ultimorevision ?? r.ultimaRevision ?? null
+    }))
+    .filter(r => String(r.cadenaId ?? r.cadenaid) === String(cadenaId));
 }

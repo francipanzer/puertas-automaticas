@@ -4,36 +4,94 @@ let currentCadenId = null;   // ← cadena activa (la usan render_rutas / showRu
 window.currentCadenId = null;
 window.currentPage = 'dashboard';
 
+function syncCurrentCadenaId(id = null) {
+  const resolvedId = id ?? currentCadenId ?? localStorage.getItem('cadenaId') ?? null;
+  const normalizedId = resolvedId === null || resolvedId === undefined || resolvedId === '' ? null : String(resolvedId);
+
+  currentCadenId = normalizedId;
+  window.currentCadenId = normalizedId;
+
+  if (normalizedId) localStorage.setItem('cadenaId', normalizedId);
+  else localStorage.removeItem('cadenaId');
+
+  return normalizedId;
+}
+window.getCurrentCadenId = () => syncCurrentCadenaId();
+window.setCurrentCadenId = (id) => syncCurrentCadenaId(id);
+
 // Suscribirse a cambios de cualquier store
 window.__onStoreChanged = (store, payload) => {
   console.log('[App] Store cambiado:', store);
-  const page = document.querySelector('.nav-item.active')?.dataset.page || currentPage;
+  const page = document.querySelector('.nav-item.active')?.dataset.page || currentPage || 'dashboard';
   const storeToPage = {
     'empleados': 'empleados',
     'clientes': 'clientes',
     'partesTrabajo': 'partesTrabajo',
+    'tableros': 'tableros',
+    'tarjetasTablero': 'tableros',
     'vehiculos': 'vehiculos',
     'presupuestos': 'presupuestos',
     'almacen': 'almacen',
-    'cadenas': 'cadenas',      // ← nuevo
-    'rutas': 'rutas',          // ← nuevo
-    'puertas': 'puertas',      // ← nuevo
-    'revisiones': 'revisiones' // ← nuevo
+    'articulos': 'almacen',
+    'ubicaciones': 'clientes',
+    'puertas': 'clientes',
+    'cadenas': 'cadenas',
+    'rutas': 'rutas',
+    'revisiones': 'revisionesProgramadas',
+    'tiposPuerta': 'configuracion',
+    'informes': 'informesKms',
+    'jornadas': 'informesKms'
   };
-  if (storeToPage[store] === page && typeof window['render_' + page] === 'function') {
-    window['render_' + page](document.getElementById('mainContent'));
-  }
+  const alsoRefresh = {
+    cadenas: ['revisionesProgramadas'],
+    rutas: ['revisionesProgramadas'],
+    puertas: ['revisionesProgramadas'],
+    revisiones: ['clientes']
+  };
+
+  const targetPage = storeToPage[store];
+  const shouldRefresh = targetPage === page || (alsoRefresh[store] || []).includes(page);
+  if (!shouldRefresh || !targetPage || typeof window['render_' + page] !== 'function') return;
+
+  const target = page === 'rutas' ? (window.getCurrentCadenId() || localStorage.getItem('cadenaId')) : document.getElementById('mainContent');
+  if (target) window['render_' + page](target);
 };
 
-document.addEventListener('DOMContentLoaded', async () => {
-  await window.seedIfEmpty();
-  setupNavigation();
-  setupMobileMenu();
+let appBooted = false;
+let appShellInitialized = false;
+
+async function bootAuthenticatedApp() {
+  if (appBooted || !window.authState?.user) return;
+  appBooted = true;
+  if (window.isAdmin()) await window.seedIfEmpty();
+  if (!appShellInitialized) {
+    setupNavigation();
+    setupMobileMenu();
+    updateSyncStatus();
+    initTheme();
+    appShellInitialized = true;
+  }
   navigateTo('dashboard');
   registerServiceWorker();   // único punto de registro del SW
-  updateSyncStatus();
-  initTheme();
   checkVehiculoAlerts();     // ← ahora sí se ejecuta
+}
+
+window.addEventListener('valgom:authenticated', () => {
+  Promise.resolve(appBooted ? navigateTo('dashboard') : bootAuthenticatedApp()).catch(error => {
+    appBooted = false;
+    console.error('[App] No se pudo iniciar la aplicación:', error);
+    showToast(`No se pudo iniciar la aplicación: ${error.message}`, 'error');
+  });
+});
+
+window.addEventListener('valgom:logged-out', () => {
+  appBooted = false;
+  document.getElementById('mainContent').innerHTML = '';
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await window.appAuthReady;
+  if (window.authState?.user) await bootAuthenticatedApp();
 });
 
 function setupNavigation() {
@@ -64,17 +122,8 @@ function initTheme() {
   const btn = document.getElementById('themeToggle');
   if (btn) {
     btn.addEventListener('click', () => {
-      const next = document.body.classList.contains('light') ? 'dark' : 'new' === '' ? 'dark' : (document.body.classList.contains('light') ? 'dark' : 'light');
-      applyTheme(next);
-    });
-  }
-}function initTheme() {
-  const saved = localStorage.getItem('theme') || 'dark';
-  applyTheme(saved);
-  const btn = document.getElementById('themeToggle');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      const next = document.body.classList.contains('light') ? 'dark' : 'light';
+      const isLight = document.body.classList.contains('light');
+      const next = isLight ? 'dark' : 'light';
       applyTheme(next);
     });
   }
@@ -99,8 +148,22 @@ function setupMobileMenu() {
 }
 
 function navigateTo(page, arg) {
+  if (window.SUPABASE_AUTH_REQUIRED && !window.canAccessPage?.(page)) {
+    if (window.isTechnician?.() && page !== 'dashboard') return navigateTo('dashboard');
+    const main = document.getElementById('mainContent');
+    main.innerHTML = '<div class="empty-state"><i class="fas fa-lock"></i><h3>No tienes permiso para acceder a esta pantalla.</h3></div>';
+    document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+    return Promise.resolve();
+  }
   currentPage = page;
   window.currentPage = page;
+
+  if (page === 'rutas' && arg) {
+    window.setCurrentCadenId(arg);
+  } else if (page === 'rutas') {
+    const stored = window.getCurrentCadenId() || localStorage.getItem('cadenaId');
+    if (stored) window.setCurrentCadenId(stored);
+  }
 
   document.querySelectorAll('.nav-item').forEach(i =>
     i.classList.toggle('active', i.dataset.page === page));
@@ -112,10 +175,14 @@ function navigateTo(page, arg) {
 
   const main = document.getElementById('mainContent');
   const renderer = window['render_' + page];
+  let renderPromise=Promise.resolve();
 
   if (renderer) {
     try {
-      renderer(main, arg);
+      renderPromise=Promise.resolve(renderer(main, arg)).catch(e => {
+        console.error('[navigateTo] error en render_' + page + ':', e);
+        main.innerHTML = '<div class="empty-state"><i class="fas fa-triangle-exclamation"></i><h3>Error al cargar la página</h3></div>';
+      });
     } catch (e) {
       console.error('[navigateTo] error en render_' + page + ':', e);
       main.innerHTML = '<div class="empty-state"><i class="fas fa-triangle-exclamation"></i><h3>Error al cargar la página</h3></div>';
@@ -125,6 +192,7 @@ function navigateTo(page, arg) {
   }
 
   actualizarBadgeRevisiones();
+  return renderPromise;
 }
 
 // ── Badge de pendientes en el nav ──────────────────────────
@@ -251,24 +319,32 @@ function showInstallBanner() {
 // ── Indicador online / offline ─────────────────────────────
 window.addEventListener('online', updateSyncStatus);
 window.addEventListener('offline', updateSyncStatus);
+window.addEventListener('autopuerta:sync-state', updateSyncStatus);
 
 function updateSyncStatus() {
   const el = document.getElementById('syncStatus');
   if (!el) return;
-  if (navigator.onLine) {
+  let pending = 0;
+  try {
+    const queue = JSON.parse(localStorage.getItem('autopuerta_sync_queue') || '[]');
+    pending = Array.isArray(queue) ? queue.length : 0;
+  } catch (e) {}
+  if (!navigator.onLine) {
+    el.className = 'sync-status offline';
+    el.querySelector('span').textContent = pending ? `Sin conexión · ${pending} pendiente(s)` : 'Sin conexión';
+  } else if (pending) {
+    el.className = 'sync-status pending';
+    el.querySelector('span').textContent = `Pendientes de sincronizar: ${pending}`;
+  } else {
     el.className = 'sync-status online';
     el.querySelector('span').textContent = 'Conectado';
-  } else {
-    el.className = 'sync-status offline';
-    el.querySelector('span').textContent = 'Sin conexión';
   }
 }
 
-// Función para verificar ITV y pedir permiso de notificación
+// Función para verificar ITV solo cuando el usuario ya haya concedido permisos
 async function checkVehiculoAlerts() {
   if (!("Notification" in window)) return;
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") return;
+  if (Notification.permission !== "granted") return;
 
   const vehiculos = await dbGetAll('vehiculos');
   const hoy = new Date();
@@ -621,6 +697,12 @@ let revisionPuertaActual = null;
 async function abrirRevision(puertaId) {
   const puerta = await dbGet('puertas', puertaId);
   if (!puerta) return alert('Puerta no encontrada');
+  const cliente=puerta.clienteId ? await dbGet('clientes',puerta.clienteId) : null;
+  const cadenaId=cliente?.cadenaId??cliente?.cadenaid;
+  const cadena=cadenaId ? await dbGet('cadenas',cadenaId) : null;
+  if(cadena?.nombre?.trim().toLocaleUpperCase()==='DOTICS'||cliente?.nombre?.trim().toLocaleUpperCase()==='DOTICS'){
+    return window.openDoticsMaintenanceForm(cadena?.id||cliente.id,puertaId);
+  }
   revisionPuertaActual = puerta;
 
   const tipo = getTipoPuerta(puerta.tipo);
@@ -639,7 +721,9 @@ async function abrirRevision(puertaId) {
     </div>
   `).join('');
 
-  const empleados = await dbGetAll('empleados');
+  const empleados = window.isTechnician?.()
+    ? (window.authState.employee ? [window.authState.employee] : [])
+    : await dbGetAll('empleados');
   const empOpts = empleados.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('');
 
   const overlay = document.createElement('div');
@@ -677,6 +761,14 @@ async function abrirRevision(puertaId) {
     '</div>';
 
   document.body.appendChild(overlay);
+  if (window.isTechnician?.()) {
+    const technician = window.authState.employee;
+    const select = document.getElementById('rev_tecnico');
+    if (select && technician) {
+      select.value = technician.id;
+      select.disabled = true;
+    }
+  }
 }
 
 function cerrarRevision() {
@@ -729,9 +821,24 @@ async function guardarRevision() {
     ultimaRevision: fecha,
     estado: estadoFinal,
     tecnicoUltimo: tecnicoId,
-    proximaRevision: calcularProximaRevision(puerta.tipo, fecha)
+    proximaRevision: null
   };
-  await dbPut('puertas', puertaActualizada);
+  if (window.isTechnician?.()) {
+    const { data: nextRevision, error } = await window.supabaseDB.rpc('update_door_revision_schedule', {
+      p_id: String(puerta.id),
+      p_last_revision: fecha,
+      p_state: estadoFinal
+    });
+    if (error) throw error;
+    puertaActualizada.proximaRevision = nextRevision;
+  } else {
+    const client = puerta.clienteId ? await dbGet('clientes', puerta.clienteId) : null;
+    const routeId = client?.rutaId ?? client?.rutaid;
+    const route = routeId ? await dbGet('rutas', routeId) : null;
+    const frequency = Number(route?.frecuenciaMeses ?? route?.frecuenciameses) || 6;
+    puertaActualizada.proximaRevision = calcularProximaRevision(fecha, frequency);
+    await dbPut('puertas', puertaActualizada);
+  }
 
   cerrarRevision();
   showToast('Revisión registrada · Próx.: ' + puertaActualizada.proximaRevision);
@@ -1021,8 +1128,8 @@ window.pages.setupNavigation = setupNavigation;
 window.pages.setupMobileMenu = setupMobileMenu;
 window.navigateTo = navigateTo;
 window.getCurrentPage = () => currentPage;
-window.getCurrentCadenId = () => currentCadenId;
-window.setCurrentCadenId = (id) => { currentCadenId = id; window.currentCadenId = id; };
+window.getCurrentCadenId = () => syncCurrentCadenaId();
+window.setCurrentCadenId = (id) => syncCurrentCadenaId(id);
 window.showToast = showToast;
 window.diasHasta = diasHasta;
 window.closeAllModals = closeAllModals;

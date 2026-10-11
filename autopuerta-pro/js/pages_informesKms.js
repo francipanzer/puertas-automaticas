@@ -539,7 +539,7 @@ async function generarPDF() {
     html += `</tbody></table>`;
   }
 
-  html += `<p class="footer">AutoPuerta Pro — Informe generado el ${new Date().toLocaleString('es-ES')}</p>`;
+  html += `<p class="footer">Valgom — Informe generado el ${new Date().toLocaleString('es-ES')}</p>`;
   html += `</body></html>`;
 
   // Abrir en nueva ventana e imprimir

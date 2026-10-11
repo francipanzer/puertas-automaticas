@@ -1,4 +1,4 @@
-const CACHE_NAME = 'autopuerta-v35'; // ⬆️ subido: fuerza limpieza de la v34
+const CACHE_NAME = 'autopuerta-v36'; // ⬆️ subido: incluye la vista de Tableros
 
 // ═══════════════════════════════════════════════════════════
 //  INSTALL
